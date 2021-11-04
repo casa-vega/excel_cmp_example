@@ -1,0 +1,92 @@
+name: excel_cmp example
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  check_diffs:
+    runs-on: self-hosted
+    outputs:
+      spreadsheets: ${{ steps.diffs.outputs.spreadsheets }}
+      empty_matrix: ${{ steps.diffs.outputs.empty_matrix }}
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Get changed spreadsheets
+        id: changed
+        uses: tj-actions/changed-files@v9.3
+        with:
+          files: |
+            *.xlsx
+
+      - name: Generate changed spreadsheets matrix
+        id: diffs
+        run: |
+          changed="${{ steps.changed.outputs.all_modified_files }}"
+          output=$(printf '%s' "$changed" | jq -Rc 'split(" ") ')
+          if [[ "$output" == "" ]]; then
+            output="[]"
+            echo "::set-output name=empty_matrix::true"
+          else
+            echo "::set-output name=empty_matrix::false"
+          fi
+          echo "output: $output"
+          echo "::set-output name=spreadsheets::$output"
+
+  run_diffs:
+    needs: check_diffs
+    if: ${{ needs.check_diffs.outputs.empty_matrix == 'false' }}
+    runs-on: self-hosted
+    outputs:
+      pr-url: ${{ steps.pr-url.outputs.url }}
+    strategy:
+      fail-fast: true
+      matrix:
+        spreadsheets: ${{ fromJSON(needs.check_diffs.outputs.spreadsheets) }}
+    steps:
+      - name: Checkout main branch
+        uses: actions/checkout@v2
+        with:
+          ref: main
+          path: main
+
+      - name: Checkout feature branch
+        uses: actions/checkout@v2
+        with:
+          path: feature
+
+      - name: Generate PR comment
+        id: comment
+        run: |
+          content=`excel_cmp --diff_format=unified main/${{ matrix.spreadsheets }} feature/${{ matrix.spreadsheets }} || true`
+          content="${content//'%'/'%25'}"
+          content="${content//$'\n'/'%0A'}"
+          content="${content//$'\r'/'%0D'}"
+          echo "::set-output name=content::$content"
+
+      - name: Post PR comment
+        uses: mshick/add-pr-comment@v1
+        with:
+          message: |
+            ```diff
+            ${{ steps.comment.outputs.content }}
+            ```
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          allow-repeats: false # This is the default
+
+      - uses: kceb/pull-request-url-action@v1
+        id: pr-url
+      - run: echo "${{ steps.pr-url.outputs.url }}"
+
+  Validate-Excel-Changes:
+    name: Validate Excel Changes
+    needs: [run_diffs]
+    runs-on: self-hosted
+    environment:
+      name: validate
+      url: ${{ needs.run_diffs.outputs.pr-url }}
+    steps:
+    - name: validate
+      run: echo "validating"
